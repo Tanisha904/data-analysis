@@ -1,0 +1,14 @@
+{
+    "name": "node-express-csv-analyzer",
+    "version": "1.0.0",
+    "description": "Simple Node + Express app to upload a CSV, compute summaries and show charts",
+    "main": "app.js",
+    "scripts": {
+        "start": "node app.js"
+    },
+    "dependencies": {
+        "csv-parser": "^3.2.0",
+        "express": "^4.21.2",
+        "multer": "^1.4.5-lts.1"
+    }
+}

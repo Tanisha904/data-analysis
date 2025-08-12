@@ -1,0 +1,206 @@
+ const express = require('express'); 
+ const multer = require('multer'); 
+ const csv = require('csv-parser'); 
+ const { Readable } = require('stream');
+
+const app = express(); 
+const upload = multer({ storage: multer.memoryStorage() }); 
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static('public'));
+
+app.get('/', (req, res) => { res.send(
+` <!doctype html>
+
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSV Analyzer</title>
+  <style>
+    body{font-family: Arial, Helvetica, sans-serif; max-width:1000px;margin:20px auto;padding:10px}
+    .box{border:1px solid #ddd;padding:16px;border-radius:8px}
+    table{border-collapse:collapse;width:100%;margin-top:12px}
+    table,th,td{border:1px solid #ccc}
+    th,td{padding:8px;text-align:left}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h2>CSV Analyzer (Node.js + Express)</h2>
+  <div class="box">
+    <p>Upload a CSV file. The server will parse it, compute numeric summaries, and show vendor summaries and charts.</p>
+    <form id="uploadForm" enctype="multipart/form-data">
+      <input type="file" name="datafile" id="datafile" accept=".csv" required />
+      <select id="groupCol">
+        <option value="Vendor Name">Group by: Vendor Name</option>
+        <option value="Vendorname">Vendorname</option>
+        <option value="Vendor">Vendor</option>
+        <option value="">-- Other / auto-detect --</option>
+      </select>
+      <button type="submit">Upload & Analyze</button>
+    </form>
+  </div>  <div id="results"></div>  <script>
+    const form = document.getElementById('uploadForm');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = document.getElementById('datafile').files[0];
+      if(!f){ alert('Please pick a CSV'); return }
+      const formData = new FormData();
+      formData.append('datafile', f);
+      const groupCol = document.getElementById('groupCol').value;
+      if(groupCol) formData.append('groupCol', groupCol);
+
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      if(!res.ok){ const txt = await res.text(); document.getElementById('results').innerHTML = '<pre>'+txt+'</pre>'; return }const json = await res.json();
+  renderResults(json);
+});
+
+function renderResults(data){
+  const div = document.getElementById('results');
+  const summary = data.summary;
+  const vendors = data.vendorSummaries;
+
+  let html = '<h3>Overall summary</h3>';
+  html += '<div class="box">';
+  html += '<pre>' + JSON.stringify(summary, null, 2) + '</pre>';
+  html += '</div>';
+
+  html += '<h3>Top vendors</h3>';
+  html += '<div class="box">';
+  html += '<table><thead><tr><th>Group</th><th>Total Sales Dollars</th><th>Total Sales Quantity</th><th>Count</th></tr></thead><tbody>';
+  vendors.forEach(v => {
+    html += <tr><td>${escapeHtml(v.group)}</td><td>${v.totalSalesDollars.toLocaleString()}</td><td>${v.totalSalesQuantity.toLocaleString()}</td><td>${v.count}</td></tr>;
+  });
+  html += '</tbody></table>';
+  html += '</div>';
+
+  html += '<h3>Chart: Top 10 by Sales Dollars</h3>';
+  html += '<canvas id="chart" width="800" height="400"></canvas>';
+
+  div.innerHTML = html;
+
+  const top = vendors.slice(0,10);
+  const labels = top.map(x => x.group);
+  const values = top.map(x => x.totalSalesDollars);
+
+  const ctx = document.getElementById('chart').getContext('2d');
+  new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Sales Dollars', data: values }] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+}
+
+function escapeHtml(unsafe) {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/\'/g, "&#039;");
+}
+
+  </script>
+</body>
+</html>
+  `);
+});// Upload endpoint app.post('/upload', upload.single('datafile'), (req, res) => { if(!req.file) return res.status(400).send('No file uploaded');
+
+// Optional group column hint from client const groupHint = (req.body.groupCol || '').trim();
+
+const results = []; const s = new Readable(); s.push(req.file.buffer); s.push(null);
+
+s.pipe(csv()) .on('data', (row) => { results.push(row); }) .on('end', () => { if(results.length === 0) return res.status(400).send('CSV parsed but has no rows');
+
+// Detect numeric columns that look like sales dollars / quantity
+  const sample = results[0];
+  const headers = Object.keys(sample);
+
+  // helper to parse numbers from row values (remove commas, currency symbols)
+  const toNumber = (v) => {
+    if(v === undefined || v === null) return 0;
+    if(typeof v === 'number') return v;
+    const str = String(v).replace(/[^0-9.\-]/g, '');
+    if(str === '' || str === '.' || str === '-' ) return 0;
+    const n = Number(str);
+    return Number.isNaN(n) ? 0 : n;
+  };
+
+  // Heuristics: find columns with names that match common targets
+  const lower = (h) => h.toLowerCase();
+  const findCol = (candidates) => {
+    for(const c of headers){
+      for(const cand of candidates){
+        if(lower(c).includes(lower(cand))) return c;
+      }
+    }
+    return null;
+  };
+
+  const salesDollarsCol = findCol(['sales dollars','totalsalesdollars','total sales dollars','salesdollars','totalsales','totalsalesdollar','total sales dollars','total sales dollars']) || findCol(['sales','dollars']) || findCol(['total sales dollars','total sales dollars']);
+  const salesQtyCol = findCol(['quantity','qty','sales quantity','totalsalesquantity','total sales quantity']);
+
+  const vendorCol = groupHint || findCol(['vendor name','vendorname','vendor name','vendor']);
+
+  // fallback: pick numeric-looking columns by sampling
+  const numericCols = headers.filter(h => {
+    let numericCount = 0; let sampleCount = 0;
+    for(let i=0;i<Math.min(10,results.length);i++){
+      sampleCount++;
+      const n = toNumber(results[i][h]);
+      if(n !== 0) numericCount++;
+    }
+    return numericCount / sampleCount >= 0.3; // at least some numeric values
+  });
+
+  // compute overall summary
+  let totalSalesDollars = 0; let totalSalesQuantity = 0;
+  for(const r of results){
+    if(salesDollarsCol) totalSalesDollars += toNumber(r[salesDollarsCol]);
+    if(salesQtyCol) totalSalesQuantity += toNumber(r[salesQtyCol]);
+    // fallback: if no explicit column, try to sum first numeric column
+    if(!salesDollarsCol && numericCols.length>0){
+      totalSalesDollars += toNumber(r[numericCols[0]]);
+    }
+  }
+
+  // Group by vendorCol
+  const groups = {};
+  for(const r of results){
+    const group = vendorCol ? (r[vendorCol] || 'Unknown') : 'All';
+    if(!groups[group]) groups[group] = { totalSalesDollars:0, totalSalesQuantity:0, count:0 };
+    groups[group].count += 1;
+    groups[group].totalSalesDollars += salesDollarsCol ? toNumber(r[salesDollarsCol]) : (numericCols.length>0 ? toNumber(r[numericCols[0]]) : 0);
+    groups[group].totalSalesQuantity += salesQtyCol ? toNumber(r[salesQtyCol]) : 0;
+  }
+
+  // convert to array sorted by sales dollars desc
+  const vendorSummaries = Object.entries(groups).map(([group, obj]) => ({ group, ...obj }));
+  vendorSummaries.sort((a,b) => b.totalSalesDollars - a.totalSalesDollars);
+
+  const response = {
+    rowCount: results.length,
+    headers,
+    summary: {
+      totalSalesDollars,
+      totalSalesQuantity,
+      numericColumnsChecked: numericCols,
+      detectedSalesDollarsColumn: salesDollarsCol || null,
+      detectedSalesQuantityColumn: salesQtyCol || null,
+      detectedVendorColumn: vendorCol || null
+    },
+    vendorSummaries
+  };
+
+  res.json(response);
+})
+.on('error', (err) => {
+  console.error('CSV parse error', err);
+  res.status(500).send('Error parsing CSV: ' + err.message);
+});
+
+});
+
+app.listen(PORT, () => console.log(Server listening at http://localhost:${PORT}));
+
