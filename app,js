@@ -105,19 +105,19 @@ function escapeHtml(unsafe) {
 </body>
 </html>
   `);
-});// Upload endpoint app.post('/upload', upload.single('datafile'), (req, res) => { if(!req.file) return res.status(400).send('No file uploaded');
+});
 
-// Optional group column hint from client const groupHint = (req.body.groupCol || '').trim();
+app.post('/upload', upload.single('datafile'), (req, res) => { if(!req.file) return res.status(400).send('No file uploaded');
+
+const groupHint = (req.body.groupCol || '').trim();
 
 const results = []; const s = new Readable(); s.push(req.file.buffer); s.push(null);
 
 s.pipe(csv()) .on('data', (row) => { results.push(row); }) .on('end', () => { if(results.length === 0) return res.status(400).send('CSV parsed but has no rows');
 
-// Detect numeric columns that look like sales dollars / quantity
   const sample = results[0];
   const headers = Object.keys(sample);
 
-  // helper to parse numbers from row values (remove commas, currency symbols)
   const toNumber = (v) => {
     if(v === undefined || v === null) return 0;
     if(typeof v === 'number') return v;
@@ -127,7 +127,6 @@ s.pipe(csv()) .on('data', (row) => { results.push(row); }) .on('end', () => { if
     return Number.isNaN(n) ? 0 : n;
   };
 
-  // Heuristics: find columns with names that match common targets
   const lower = (h) => h.toLowerCase();
   const findCol = (candidates) => {
     for(const c of headers){
@@ -143,29 +142,23 @@ s.pipe(csv()) .on('data', (row) => { results.push(row); }) .on('end', () => { if
 
   const vendorCol = groupHint || findCol(['vendor name','vendorname','vendor name','vendor']);
 
-  // fallback: pick numeric-looking columns by sampling
-  const numericCols = headers.filter(h => {
     let numericCount = 0; let sampleCount = 0;
     for(let i=0;i<Math.min(10,results.length);i++){
       sampleCount++;
       const n = toNumber(results[i][h]);
       if(n !== 0) numericCount++;
     }
-    return numericCount / sampleCount >= 0.3; // at least some numeric values
-  });
-
-  // compute overall summary
+    return numericCount / sampleCount >= 0.3;
+  })
   let totalSalesDollars = 0; let totalSalesQuantity = 0;
   for(const r of results){
     if(salesDollarsCol) totalSalesDollars += toNumber(r[salesDollarsCol]);
     if(salesQtyCol) totalSalesQuantity += toNumber(r[salesQtyCol]);
-    // fallback: if no explicit column, try to sum first numeric column
     if(!salesDollarsCol && numericCols.length>0){
       totalSalesDollars += toNumber(r[numericCols[0]]);
     }
   }
 
-  // Group by vendorCol
   const groups = {};
   for(const r of results){
     const group = vendorCol ? (r[vendorCol] || 'Unknown') : 'All';
@@ -175,7 +168,6 @@ s.pipe(csv()) .on('data', (row) => { results.push(row); }) .on('end', () => { if
     groups[group].totalSalesQuantity += salesQtyCol ? toNumber(r[salesQtyCol]) : 0;
   }
 
-  // convert to array sorted by sales dollars desc
   const vendorSummaries = Object.entries(groups).map(([group, obj]) => ({ group, ...obj }));
   vendorSummaries.sort((a,b) => b.totalSalesDollars - a.totalSalesDollars);
 
